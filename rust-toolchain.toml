@@ -1,0 +1,4 @@
+# Pinned to the Rust shipped by Kali/Debian so builds match the packaged toolchain.
+[toolchain]
+channel = "1.95"
+components = ["rustfmt", "clippy"]

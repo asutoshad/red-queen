@@ -1,0 +1,14 @@
+# Build output
+/target/
+*.deb
+*.AppImage
+
+# Local tooling / editor state
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Probe dumps may contain machine data; keep them out of git unless reviewed
+/probe-*.json
