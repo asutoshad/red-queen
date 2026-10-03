@@ -10,6 +10,11 @@ possible, and runs privileged operations in a small, hardened system daemon.
 **Primary target:** Acer Nitro V 15 (ANV15-51). Other Nitro and Predator
 models are planned through capability-detecting backends.
 
+## Documentation
+
+- [How it works](docs/architecture.md)
+- [Security model](docs/security.md)
+
 ## Disclaimer
 
 This project is not affiliated with Acer. Acer, Nitro, NitroSense and Predator
