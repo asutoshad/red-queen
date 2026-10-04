@@ -32,6 +32,21 @@ cargo run --release -p redqueen -- probe            # human-readable
 cargo run --release -p redqueen -- probe --json     # for issue reports
 ```
 
+Try the daemon without installing anything (it serves a private development
+bus; the real service runs on the system bus with the unit in
+`packaging/systemd/`):
+
+```sh
+dbus-run-session -- bash -c '
+  ./target/release/redqueend --bus session & sleep 2
+  ./target/release/redqueen --bus session status
+  kill %1'
+```
+
+To install it as a real hardened service for testing, run
+`sudo scripts/dev-install.sh` after `cargo build --release`
+(`scripts/dev-uninstall.sh` removes it).
+
 The JSON report never contains serial numbers, UUIDs, MAC addresses,
 the hostname or the user name.
 

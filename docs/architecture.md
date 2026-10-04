@@ -37,7 +37,7 @@ flowchart TB
 |---|---|---|
 | `redqueend` | root (empty capability set), systemd service | Owns all hardware access: capability discovery, telemetry, profile and fan control, safety supervisor |
 | `redqueen` | the logged-in user | The desktop application, plus the command-line interface (`redqueen status`, `redqueen probe`, …) |
-| `redqueen-agent` | the logged-in user, systemd user service | Tray icon, linking applications to profiles, the NitroSense-key shortcut. Keeps working when the window is closed |
+| `redqueen-agent` *(planned)* | the logged-in user, systemd user service | Tray icon, linking applications to profiles, the NitroSense-key shortcut. Keeps working when the window is closed |
 
 The application and command line never touch hardware directly. They talk
 to the daemon over D-Bus, so the same rules apply whichever is used.
@@ -181,8 +181,8 @@ explicit user choice > running linked application > AC/battery rule > default
 | `rq-core` | Domain types, capability model, fan-curve and hysteresis logic (no I/O) |
 | `rq-hardware` | Backends: platform_profile, hwmon, power_supply, NVML, Acer WMI |
 | `rq-ipc` | D-Bus interface definitions shared by the daemon and clients |
-| `rq-config` | Settings and profile files, schema versions, migrations |
+| `rq-config` *(planned)* | Settings and profile files, schema versions, migrations |
 | `redqueend` | The system daemon |
 | `redqueen` | The desktop application and command line |
-| `redqueen-agent` | The user-session agent |
+| `redqueen-agent` *(planned)* | The user-session agent |
 | `rq-testkit` | Fake sysfs trees and mocks for tests |

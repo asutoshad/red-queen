@@ -37,15 +37,21 @@ project's own application.
 
 Bus name `io.github.asutoshad.RedQueen.Daemon` on the system bus.
 
+**Implemented today:** the read-only methods (`GetCapabilities`, `GetStatus`,
+`GetTelemetry`, `GetHistory`, `GetHardwareIdentity`) and the telemetry
+subscription (`Subscribe`, `Unsubscribe`). Rows marked *(planned)* below are
+added together with the feature they control, and are listed here so the
+authorization model is visible in advance.
+
 | Method | Authorization |
 |---|---|
-| `GetCapabilities`, `GetStatus`, `GetTelemetry`, `GetHistory`, `GetHardwareIdentity` | none (read-only, no personal data) |
-| `SetThermalProfile` | `io.github.asutoshad.RedQueen.set-profile` |
-| `SetFanMode` (Auto) | none: returning to firmware control is always allowed |
-| `SetFanMode` (Max/Custom), `SetFanSpeed`, `SetFanCurve` | `io.github.asutoshad.RedQueen.control-fans` |
-| `SetBatteryChargeLimit`, `StartBatteryCalibration`, `SetUsbCharging` | `io.github.asutoshad.RedQueen.battery` |
-| `SetLcdOverdrive`, `SetBootSound`, `SetKeyboardBacklightTimeout` | `io.github.asutoshad.RedQueen.firmware-settings` |
-| `EnableAcerGamingInterface` (writes the fixed `/etc/modprobe.d/red-queen.conf`) | `io.github.asutoshad.RedQueen.manage-driver` |
+| `GetCapabilities`, `GetStatus`, `GetTelemetry`, `GetHistory`, `GetHardwareIdentity`, `Subscribe`, `Unsubscribe` | none (read-only, no personal data) |
+| (planned) `SetThermalProfile` | `io.github.asutoshad.RedQueen.set-profile` |
+| (planned) `SetFanMode` (Auto) | none: returning to firmware control is always allowed |
+| (planned) `SetFanMode` (Max/Custom), `SetFanSpeed`, `SetFanCurve` | `io.github.asutoshad.RedQueen.control-fans` |
+| (planned) `SetBatteryChargeLimit`, `StartBatteryCalibration`, `SetUsbCharging` | `io.github.asutoshad.RedQueen.battery` |
+| (planned) `SetLcdOverdrive`, `SetBootSound`, `SetKeyboardBacklightTimeout` | `io.github.asutoshad.RedQueen.firmware-settings` |
+| (planned) `EnableAcerGamingInterface` (writes the fixed `/etc/modprobe.d/red-queen.conf`) | `io.github.asutoshad.RedQueen.manage-driver` |
 
 The D-Bus bus policy lets anyone call the daemon but only root own its name,
 so no other program can impersonate it.
@@ -65,7 +71,10 @@ Administrators can override these with polkit rules in `/etc/polkit-1/rules.d/`.
 - Writes are rate-limited and coalesced per client, so a misbehaving client
   can't flood the embedded controller.
 - Payload sizes (for example fan-curve point counts) are bounded.
-- Telemetry signals are sent only to subscribed clients.
+- Live telemetry signals are emitted only while at least one client is
+  subscribed, at most 32 clients may subscribe, and a client's subscription
+  is dropped when it disconnects.
+- `GetHistory` accepts 1–3600 seconds; anything else is rejected.
 
 ## systemd hardening
 
@@ -78,7 +87,7 @@ capabilities such as `CAP_SYS_MODULE` or `CAP_SYS_ADMIN` aren't needed.
 | `CapabilityBoundingSet=` | empty | no privileged kernel operations |
 | `NoNewPrivileges=` | yes | |
 | `ProtectSystem=` | strict | whole filesystem read-only… |
-| `ReadWritePaths=` | `/var/lib/red-queen /etc/modprobe.d` | …except its own state and the single driver-option file |
+| `StateDirectory=` | `red-queen` | …except its own state directory, `/var/lib/red-queen` (a later release adds one more path, for the driver-option file) |
 | `ProtectKernelTunables=` | **no** | must write `platform_profile` and hwmon files in `/sys` |
 | `ProtectKernelModules=` | yes | never loads or unloads modules |
 | `ProtectHome=`, `PrivateTmp=` | yes | no access to user files |
