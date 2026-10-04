@@ -18,7 +18,7 @@ done
 
 install -Dm755 "$bin/redqueend" /usr/local/bin/redqueend
 install -Dm755 "$bin/redqueen" /usr/local/bin/redqueen
-sed 's|^ExecStart=.*|ExecStart=/usr/local/bin/redqueend|' \
+sed 's|/usr/bin/redqueend|/usr/local/bin/redqueend|g' \
     "$root/packaging/systemd/redqueend.service" > /etc/systemd/system/redqueend.service
 install -Dm644 "$root/packaging/dbus/io.github.asutoshad.RedQueen.Daemon.conf" \
     /etc/dbus-1/system.d/io.github.asutoshad.RedQueen.Daemon.conf

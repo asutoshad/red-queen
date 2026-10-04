@@ -7,6 +7,10 @@ After=dbus.service
 Type=dbus
 BusName=io.github.asutoshad.RedQueen.Daemon
 ExecStart=/usr/bin/redqueend
+# Runs after the daemon exits for ANY reason, including a crash or SIGKILL:
+# if the fans may have been left under manual control, hand them back to the
+# firmware. (The leading '-' ignores its exit status; it logs on its own.)
+ExecStopPost=-/usr/bin/redqueend --restore-auto
 Restart=on-failure
 RestartSec=2
 StateDirectory=red-queen

@@ -19,4 +19,14 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+
+  <action id="io.github.asutoshad.RedQueen.control-fans">
+    <description>Take manual control of the laptop's fans</description>
+    <message>Authentication is required to control the fans manually</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>
