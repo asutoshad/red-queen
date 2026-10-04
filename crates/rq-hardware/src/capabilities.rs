@@ -58,7 +58,7 @@ pub fn identify_fans(snap: &SystemSnapshot) -> Vec<FanIdentity> {
 pub fn evaluate(snap: &SystemSnapshot) -> Vec<Cap> {
     let model = models::lookup(&snap.identity);
     let fans = identify_fans(snap);
-    vec![
+    let mut caps = vec![
         thermal_profiles(snap, model),
         fan_telemetry(snap, model, &fans),
         fan_role(snap, model, &fans, FanRole::Cpu, Feature::CpuFan),
@@ -83,7 +83,20 @@ pub fn evaluate(snap: &SystemSnapshot) -> Vec<Cap> {
         Cap::unknown(Feature::FirmwareUpdates, Reason::RuntimeCheckRequired),
         Cap::unsupported(Feature::AudioEnhancement, Reason::UnsupportedByDesign),
         nitrosense_key(snap),
-    ]
+    ];
+    // Only a feature that was tested on this model and BIOS, and whose
+    // interface is present right now, is reported as "supported".
+    if let Some(m) = model.filter(|m| m.verified_on(&snap.identity)) {
+        for cap in &mut caps {
+            if cap.supported
+                && cap.maturity == rq_core::Maturity::Detected
+                && m.verified_features.contains(&cap.feature)
+            {
+                cap.maturity = rq_core::Maturity::Supported;
+            }
+        }
+    }
+    caps
 }
 
 /// The reason acer-wmi features are missing, if it's the known

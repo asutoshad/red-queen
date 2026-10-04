@@ -76,11 +76,8 @@ fn predator_v4_exposes_profiles_and_fans() -> TestResult {
 
     let tp = cap(&snap, Feature::ThermalProfiles);
     assert!(tp.supported && tp.writable && tp.requires_privilege);
-    assert_eq!(
-        tp.maturity,
-        Maturity::Detected,
-        "never 'supported' before hardware tests"
-    );
+    // Verified on this model and BIOS (see models.rs), so reported as supported.
+    assert_eq!(tp.maturity, Maturity::Supported);
     assert_eq!(tp.backend, Some(Backend::PlatformProfile));
 
     let acer = snap.acer_hwmon().ok_or("no acer hwmon")?;
@@ -392,6 +389,39 @@ fn telemetry_reads_the_profile_the_daemon_controls() -> TestResult {
     assert_eq!(
         sampler.sample(0).thermal_profile,
         Some(ThermalProfileId::Quiet)
+    );
+    Ok(())
+}
+
+#[test]
+fn supported_only_on_the_bios_it_was_tested_on() -> TestResult {
+    let fs = presets::anv15_51(true)?;
+    let maturity = |snap: &SystemSnapshot, f: Feature| cap(snap, f).maturity;
+
+    let tested = SystemSnapshot::discover(&SystemRoot::at(fs.path()));
+    assert_eq!(
+        maturity(&tested, Feature::ThermalProfiles),
+        Maturity::Supported
+    );
+    assert_eq!(
+        maturity(&tested, Feature::FanTelemetry),
+        Maturity::Supported
+    );
+    // Detected but never exercised by a test: not promoted.
+    assert_eq!(
+        maturity(&tested, Feature::BatteryTelemetry),
+        Maturity::Detected
+    );
+    assert_eq!(
+        maturity(&tested, Feature::NitroSenseKey),
+        Maturity::Detected
+    );
+
+    fs.file("/sys/class/dmi/id/bios_version", "V9.99")?;
+    let other = SystemSnapshot::discover(&SystemRoot::at(fs.path()));
+    assert_eq!(
+        maturity(&other, Feature::ThermalProfiles),
+        Maturity::Detected
     );
     Ok(())
 }
