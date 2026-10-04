@@ -1,12 +1,14 @@
 //! `redqueen`: The Red Queen command line (and, later, the desktop app).
 
+mod status;
 mod summary;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use rq_core::TemperatureUnit;
 use rq_hardware::{ProbeContext, ProbeReport, SystemRoot};
 use tracing_subscriber::EnvFilter;
 
@@ -14,14 +16,40 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "redqueen", version, about)]
 struct Cli {
+    /// Which message bus the daemon is on (`session` is for development).
+    #[arg(long, value_enum, default_value = "system", global = true)]
+    bus: Bus,
+    /// Show temperatures in Fahrenheit.
+    #[arg(long, global = true)]
+    fahrenheit: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+/// A D-Bus message bus.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum Bus {
+    /// The system bus.
+    System,
+    /// The session bus.
+    Session,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Detect hardware and report what this machine supports.
     Probe(ProbeArgs),
+    /// Show live status from the daemon.
+    Status,
+    /// Daemon commands.
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
+}
+
+#[derive(Subcommand)]
+enum DaemonCommand {
+    /// Show whether the daemon is running and how it is configured.
+    Status,
 }
 
 #[derive(Args)]
@@ -52,9 +80,26 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    let unit = if cli.fahrenheit {
+        TemperatureUnit::Fahrenheit
+    } else {
+        TemperatureUnit::Celsius
+    };
     match cli.command {
         Command::Probe(args) => probe(&args),
+        Command::Status => block_on(status::status(cli.bus, unit, &mut io::stdout().lock())),
+        Command::Daemon(DaemonCommand::Status) => {
+            block_on(status::daemon_status(cli.bus, &mut io::stdout().lock()))
+        }
     }
+}
+
+fn block_on<F: std::future::Future<Output = anyhow::Result<()>>>(f: F) -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")?
+        .block_on(f)
 }
 
 fn probe(args: &ProbeArgs) -> anyhow::Result<()> {
