@@ -10,7 +10,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::service::{emit_capabilities_changed, emit_profile_changed, emit_telemetry};
+use crate::service::{
+    emit_capabilities_changed, emit_fan_mode_changed, emit_profile_changed, emit_safety_event,
+    emit_telemetry,
+};
 use crate::state::Shared;
 
 /// Subsystems whose events can change what the hardware exposes.
@@ -65,6 +68,19 @@ async fn telemetry_loop(shared: Arc<Shared>, conn: zbus::Connection) {
         {
             debug!(error = %e, "could not emit ThermalProfileChanged");
         }
+        // Safety: while any fan is under manual control, every sample is
+        // checked and control is handed back to the firmware if needed.
+        if shared.manual_fans_active() {
+            let (worker, snapshot) = (shared.clone(), sample.clone());
+            match tokio::task::spawn_blocking(move || worker.supervise_fans(&snapshot)).await {
+                Ok(Some(reason)) => {
+                    let _ = emit_safety_event(&conn, &reason).await;
+                    let _ = emit_fan_mode_changed(&conn, "auto").await;
+                }
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "fan supervision task failed"),
+            }
+        }
         if shared.has_subscribers()
             && let Err(e) = emit_telemetry(&conn, &sample).await
         {
@@ -94,14 +110,22 @@ async fn rediscovery_loop(
             _ = safety.tick() => {}
         }
         let worker = shared.clone();
-        match tokio::task::spawn_blocking(move || worker.rediscover()).await {
-            Ok(true) => {
-                info!("hardware capabilities changed");
-                if let Err(e) = emit_capabilities_changed(&conn).await {
-                    debug!(error = %e, "could not emit CapabilitiesChanged");
+        match tokio::task::spawn_blocking(move || worker.rediscover_full()).await {
+            Ok((changed, trip)) => {
+                if let Some(reason) = trip {
+                    warn!(%reason, "fan control was handed back after a hardware change");
+                    let _ = emit_safety_event(&conn, &reason).await;
+                    let _ = emit_fan_mode_changed(&conn, "auto").await;
+                }
+                if changed {
+                    info!("hardware capabilities changed");
+                    if let Err(e) = emit_capabilities_changed(&conn).await {
+                        debug!(error = %e, "could not emit CapabilitiesChanged");
+                    }
+                } else {
+                    debug!("rediscovered hardware, no change");
                 }
             }
-            Ok(false) => debug!("rediscovered hardware, no change"),
             Err(e) => warn!(error = %e, "rediscovery task failed"),
         }
     }

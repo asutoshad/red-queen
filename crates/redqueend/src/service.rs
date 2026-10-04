@@ -15,6 +15,7 @@ use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 
 use crate::authz::{Action, AuthError, Authorizer};
+use crate::fans::FanError;
 use crate::profile::SetError;
 use crate::state::Shared;
 
@@ -56,6 +57,32 @@ impl DaemonService {
     }
 }
 
+impl DaemonService {
+    /// Common tail of the fan methods: log the outcome, announce the new
+    /// mode, and return the state read back from the hardware.
+    async fn fans_reply(
+        &self,
+        outcome: Result<(), FanError>,
+        what: &str,
+        client: &str,
+        uid: Option<u32>,
+        emitter: &SignalEmitter<'_>,
+    ) -> Result<String, DaemonError> {
+        if let Err(e) = outcome {
+            warn!(what, client, uid, error = ?e, "fan control request failed");
+            return Err(fan_error(e));
+        }
+        let shared = self.shared.clone();
+        let (summary, info) =
+            tokio::task::spawn_blocking(move || (shared.fan_summary(), shared.fans_info()))
+                .await
+                .map_err(|e| DaemonError::Failed(e.to_string()))?;
+        info!(what, summary, client, uid, "fan control changed");
+        let _ = Self::fan_mode_changed(emitter, summary.to_owned()).await;
+        serde_json::to_string(&info).map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+}
+
 /// The caller's unix user id, for the audit log. Best effort.
 async fn caller_uid(conn: &zbus::Connection, header: &Header<'_>) -> Option<u32> {
     let sender = header.sender()?.clone();
@@ -65,6 +92,15 @@ async fn caller_uid(conn: &zbus::Connection, header: &Header<'_>) -> Option<u32>
         .get_connection_unix_user(zbus::names::BusName::Unique(sender))
         .await
         .ok()
+}
+
+fn fan_error(e: FanError) -> DaemonError {
+    match e {
+        FanError::Unavailable(m) | FanError::LockedOut(m) => DaemonError::Unavailable(m),
+        FanError::InvalidArgument(m) => DaemonError::InvalidArgument(m),
+        FanError::NotConfirmed(m) => DaemonError::NotConfirmed(m),
+        FanError::Failed(m) => DaemonError::Failed(m),
+    }
 }
 
 fn set_error(e: SetError) -> DaemonError {
@@ -188,6 +224,88 @@ impl DaemonService {
         }
     }
 
+    /// Fan state, limits and safety status as JSON.
+    async fn get_fans(&self) -> fdo::Result<String> {
+        let shared = self.shared.clone();
+        let info = tokio::task::spawn_blocking(move || shared.fans_info())
+            .await
+            .map_err(|e| fdo::Error::Failed(e.to_string()))?;
+        json(&info)
+    }
+
+    /// Sets every fan to `auto` (always allowed) or `max` (needs
+    /// authorization). Read back and verified before returning.
+    async fn set_fan_mode(
+        &self,
+        mode: String,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<String, DaemonError> {
+        let client = sender(&header).map_err(|e| DaemonError::Failed(e.to_string()))?;
+        self.rate_limit(&client)?;
+        let max = match mode.as_str() {
+            "auto" => false,
+            "max" => true,
+            _ => {
+                return Err(DaemonError::InvalidArgument(
+                    "mode must be 'auto' or 'max' (use SetFanSpeed for a manual speed)".into(),
+                ));
+            }
+        };
+        if max {
+            self.shared.check_manual_fans_allowed().map_err(fan_error)?;
+            self.authorize(&header, Action::ControlFans).await?;
+        }
+        let shared = self.shared.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            if max {
+                shared.set_fan_max()
+            } else {
+                shared.set_fan_auto()
+            }
+        })
+        .await
+        .map_err(|e| DaemonError::Failed(e.to_string()))?;
+        let uid = caller_uid(conn, &header).await;
+        self.fans_reply(outcome, &format!("mode {mode}"), &client, uid, &emitter)
+            .await
+    }
+
+    /// Puts one fan under manual control at `percent` (never below the safe
+    /// minimum). Needs authorization. Read back and verified.
+    async fn set_fan_speed(
+        &self,
+        fan: String,
+        percent: u32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<String, DaemonError> {
+        let client = sender(&header).map_err(|e| DaemonError::Failed(e.to_string()))?;
+        self.rate_limit(&client)?;
+        // Arguments, availability and lockout are checked before anyone is
+        // asked for a password.
+        self.shared
+            .validate_fan_custom(&fan, percent)
+            .map_err(fan_error)?;
+        self.authorize(&header, Action::ControlFans).await?;
+        let shared = self.shared.clone();
+        let target = fan.clone();
+        let outcome = tokio::task::spawn_blocking(move || shared.set_fan_custom(&target, percent))
+            .await
+            .map_err(|e| DaemonError::Failed(e.to_string()))?;
+        let uid = caller_uid(conn, &header).await;
+        self.fans_reply(
+            outcome,
+            &format!("{fan} at {percent}%"),
+            &client,
+            uid,
+            &emitter,
+        )
+        .await
+    }
+
     /// Starts live `TelemetryUpdated` signals while any client is subscribed.
     async fn subscribe(&self, #[zbus(header)] header: Header<'_>) -> fdo::Result<()> {
         let client = sender(&header)?;
@@ -205,6 +323,18 @@ impl DaemonService {
     #[zbus(signal)]
     /// A new telemetry sample (JSON). Emitted only while a client is subscribed.
     async fn telemetry_updated(emitter: &SignalEmitter<'_>, sample: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    /// Fan control changed: `auto`, `max` or `custom`.
+    async fn fan_mode_changed(emitter: &SignalEmitter<'_>, summary: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    /// The safety layer handed fan control back to the firmware.
+    async fn safety_event(
+        emitter: &SignalEmitter<'_>,
+        code: String,
+        message: String,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     /// The thermal profile changed, by any client or by the firmware.
@@ -256,4 +386,23 @@ pub async fn emit_profile_changed(
         current.kernel_name().to_owned(),
     )
     .await
+}
+
+/// Emits `FanModeChanged`.
+pub async fn emit_fan_mode_changed(conn: &zbus::Connection, summary: &str) -> zbus::Result<()> {
+    let emitter = SignalEmitter::new(conn, OBJECT_PATH)?;
+    DaemonService::fan_mode_changed(&emitter, summary.to_owned()).await
+}
+
+/// Emits `SafetyEvent` for a trip that returned fans to the firmware.
+pub async fn emit_safety_event(
+    conn: &zbus::Connection,
+    reason: &rq_core::TripReason,
+) -> zbus::Result<()> {
+    let emitter = SignalEmitter::new(conn, OBJECT_PATH)?;
+    let code = serde_json::to_value(reason)
+        .ok()
+        .and_then(|v| v.get("code").and_then(|c| c.as_str().map(str::to_owned)))
+        .unwrap_or_else(|| "unknown".to_owned());
+    DaemonService::safety_event(&emitter, code, reason.to_string()).await
 }
