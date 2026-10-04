@@ -1,22 +1,26 @@
 //! End-to-end tests: the daemon on a private D-Bus daemon, talking to real
 //! clients, with hardware faked by the ANV15-51 fixture.
 
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use redqueend::authz::Authorizer;
 use redqueend::runtime::{spawn_client_cleanup, spawn_core};
 use redqueend::service::DaemonService;
-use redqueend::state::{Config, Shared};
-use rq_core::{Feature, TelemetrySample};
+use redqueend::state::{Config, ProfileIoFactory, Shared};
+use rq_core::{Feature, TelemetrySample, ThermalProfileId};
 use rq_hardware::SystemRoot;
-use rq_ipc::{BUS_NAME, Client, MAX_SUBSCRIBERS, OBJECT_PATH};
+use rq_hardware::profile::ProfileIo;
+use rq_ipc::{BUS_NAME, ChoiceState, Client, ErrorKind, MAX_SUBSCRIBERS, OBJECT_PATH};
 use rq_testkit::{FakeSystem, presets};
 use zbus::connection::Builder;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+const PROFILE_FILE: &str = "sys/class/platform-profile/platform-profile-0/profile";
 
 /// A private `dbus-daemon`, killed on drop.
 struct PrivateBus {
@@ -50,29 +54,39 @@ impl Drop for PrivateBus {
 
 struct Harness {
     _bus: PrivateBus,
-    _fs: FakeSystem,
+    fs: FakeSystem,
     shared: Arc<Shared>,
     server: zbus::Connection,
     address: String,
 }
 
 impl Harness {
-    /// `None` when `dbus-daemon` isn't installed (reported on stderr).
+    /// Read-only daemon (every privileged request is refused).
     async fn start() -> Option<Self> {
+        Self::start_with(Authorizer::DenyAll("read-only test".into()), None).await
+    }
+
+    /// `None` when `dbus-daemon` isn't installed (reported on stderr).
+    async fn start_with(authorizer: Authorizer, factory: Option<ProfileIoFactory>) -> Option<Self> {
         let Some(bus) = PrivateBus::start() else {
             eprintln!("SKIPPED: dbus-daemon is not available");
             return None;
         };
         let fs = presets::anv15_51(true).ok()?;
-        let shared = Arc::new(Shared::new(
-            SystemRoot::at(fs.path()),
-            Config::new(Duration::from_millis(250)),
-        ));
+        let root = SystemRoot::at(fs.path());
+        let config = Config::new(Duration::from_millis(250));
+        let shared = Arc::new(match factory {
+            Some(f) => Shared::with_profile_factory(root, config, f),
+            None => Shared::new(root, config),
+        });
         let server = Builder::address(bus.address.as_str())
             .ok()?
             .name(BUS_NAME)
             .ok()?
-            .serve_at(OBJECT_PATH, DaemonService::new(shared.clone()))
+            .serve_at(
+                OBJECT_PATH,
+                DaemonService::new(shared.clone(), Arc::new(authorizer)),
+            )
             .ok()?
             .build()
             .await
@@ -80,7 +94,7 @@ impl Harness {
         let address = bus.address.clone();
         Some(Self {
             _bus: bus,
-            _fs: fs,
+            fs,
             shared,
             server,
             address,
@@ -89,6 +103,12 @@ impl Harness {
 
     async fn connect(&self) -> zbus::Result<zbus::Connection> {
         Builder::address(self.address.as_str())?.build().await
+    }
+
+    fn profile_file(&self) -> io::Result<String> {
+        Ok(std::fs::read_to_string(self.fs.path().join(PROFILE_FILE))?
+            .trim()
+            .to_owned())
     }
 }
 
@@ -99,6 +119,75 @@ macro_rules! harness {
             None => return Ok(()),
         }
     };
+    ($authorizer:expr) => {
+        match Harness::start_with($authorizer, None).await {
+            Some(h) => h,
+            None => return Ok(()),
+        }
+    };
+    ($authorizer:expr, $factory:expr) => {
+        match Harness::start_with($authorizer, Some($factory)).await {
+            Some(h) => h,
+            None => return Ok(()),
+        }
+    };
+}
+
+/// Simulated firmware with configurable misbehaviour.
+#[derive(Debug)]
+struct Firmware {
+    active: Mutex<ThermalProfileId>,
+    reject: Vec<ThermalProfileId>,
+    ignore_writes: bool,
+    writes: Mutex<Vec<ThermalProfileId>>,
+}
+
+impl Firmware {
+    fn new(reject: Vec<ThermalProfileId>, ignore_writes: bool) -> Arc<Self> {
+        Arc::new(Self {
+            active: Mutex::new(ThermalProfileId::Balanced),
+            reject,
+            ignore_writes,
+            writes: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn factory(self: &Arc<Self>) -> ProfileIoFactory {
+        let fw = self.clone();
+        Arc::new(move |_, _| Some(fw.clone() as Arc<dyn ProfileIo>))
+    }
+}
+
+impl ProfileIo for Firmware {
+    fn choices(&self) -> Vec<ThermalProfileId> {
+        ThermalProfileId::parse_choices("low-power quiet balanced balanced-performance performance")
+    }
+    fn read_active(&self) -> io::Result<ThermalProfileId> {
+        Ok(self
+            .active
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?
+            .clone())
+    }
+    fn write_active(&self, p: &ThermalProfileId) -> io::Result<()> {
+        self.writes
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?
+            .push(p.clone());
+        if self.reject.contains(p) {
+            return Err(io::Error::from_raw_os_error(5)); // EIO, as acer-wmi returns
+        }
+        if !self.ignore_writes {
+            *self
+                .active
+                .lock()
+                .map_err(|_| io::Error::other("poisoned"))? = p.clone();
+        }
+        Ok(())
+    }
+    fn describe(&self) -> String {
+        "simulated-firmware".into()
+    }
 }
 
 #[tokio::test]
@@ -254,8 +343,8 @@ async fn rediscovery_notices_hardware_changes() -> TestResult {
     assert_eq!(h.shared.status().discoveries, before + 1);
 
     // The driver is unloaded: the acer hwmon chip disappears.
-    std::fs::remove_dir_all(h._fs.path().join("sys/devices/platform/acer-wmi/hwmon"))?;
-    std::fs::remove_file(h._fs.path().join("sys/class/hwmon/hwmon7"))?;
+    std::fs::remove_dir_all(h.fs.path().join("sys/devices/platform/acer-wmi/hwmon"))?;
+    std::fs::remove_file(h.fs.path().join("sys/class/hwmon/hwmon7"))?;
     assert!(
         h.shared.rediscover(),
         "losing the fan sensors is a capability change"
@@ -267,5 +356,241 @@ async fn rediscovery_notices_hardware_changes() -> TestResult {
         .find(|c| c.feature == Feature::FanTelemetry)
         .ok_or("no capability")?;
     assert!(!fans.supported);
+    Ok(())
+}
+
+// ---------------------------------------------------------------- write path
+
+#[tokio::test]
+async fn profile_choices_are_listed() -> TestResult {
+    let h = harness!();
+    let conn = h.connect().await?;
+    let info = Client::new(&conn).await?.thermal_profiles().await?;
+    assert!(info.available);
+    assert_eq!(info.active, Some(ThermalProfileId::Balanced));
+    assert_eq!(info.choices.len(), 5);
+    assert!(
+        info.choices
+            .iter()
+            .all(|c| c.state == ChoiceState::Available)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn authorized_profile_change_is_written_verified_and_announced() -> TestResult {
+    let h = harness!(Authorizer::AllowAll);
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+    let mut changes = client.proxy().receive_thermal_profile_changed().await?;
+
+    let result = client.set_thermal_profile(&ThermalProfileId::Quiet).await?;
+    assert_eq!(result.requested, ThermalProfileId::Quiet);
+    assert_eq!(result.active, ThermalProfileId::Quiet);
+    assert_eq!(
+        h.profile_file()?,
+        "quiet",
+        "the kernel attribute really changed"
+    );
+
+    let signal = tokio::time::timeout(Duration::from_secs(3), changes.next())
+        .await?
+        .ok_or("signal stream ended")?;
+    let args = signal.args()?;
+    assert_eq!(
+        (args.previous.as_str(), args.current.as_str()),
+        ("balanced", "quiet")
+    );
+
+    // The cache was invalidated: the very next sample shows the new profile.
+    assert_eq!(
+        h.shared.sample().thermal_profile,
+        Some(ThermalProfileId::Quiet)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unauthorized_requests_change_nothing() -> TestResult {
+    let h = harness!();
+    let conn = h.connect().await?;
+    let err = Client::new(&conn)
+        .await?
+        .set_thermal_profile(&ThermalProfileId::Quiet)
+        .await
+        .expect_err("must be refused");
+    assert_eq!(err.kind(), Some(ErrorKind::NotAuthorized), "{err}");
+    assert_eq!(h.profile_file()?, "balanced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn bad_input_is_rejected_before_authorization_and_before_hardware() -> TestResult {
+    // DenyAll: if validation ran *after* authorization these would report
+    // NotAuthorized. InvalidArgument proves bad input never reaches polkit
+    // (and so never produces a password prompt) or the hardware.
+    let h = harness!();
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+    // (A NUL byte can't be tested here: D-Bus itself refuses such strings.)
+    let long = "a".repeat(65);
+    for bad in [
+        "",
+        "Quiet",
+        "../../etc/passwd",
+        "quiet\n",
+        "a b",
+        "a_b",
+        long.as_str(),
+    ] {
+        let err = client
+            .proxy()
+            .set_thermal_profile(bad)
+            .await
+            .expect_err("invalid");
+        let err = rq_ipc::ClientError::from(err);
+        assert_eq!(
+            err.kind(),
+            Some(ErrorKind::InvalidArgument),
+            "{bad:?}: {err}"
+        );
+    }
+    assert_eq!(h.profile_file()?, "balanced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn profiles_the_hardware_does_not_offer_are_refused() -> TestResult {
+    let h = harness!(Authorizer::AllowAll);
+    let conn = h.connect().await?;
+    let err = Client::new(&conn)
+        .await?
+        .set_thermal_profile(&ThermalProfileId::Other("turbo".into()))
+        .await
+        .expect_err("not offered");
+    assert_eq!(err.kind(), Some(ErrorKind::InvalidArgument), "{err}");
+    assert_eq!(h.profile_file()?, "balanced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn firmware_rejection_marks_the_profile_unsupported() -> TestResult {
+    let fw = Firmware::new(vec![ThermalProfileId::Performance], false);
+    let h = harness!(Authorizer::AllowAll, fw.factory());
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+
+    let err = client
+        .set_thermal_profile(&ThermalProfileId::Performance)
+        .await
+        .expect_err("rejected");
+    assert_eq!(err.kind(), Some(ErrorKind::Rejected), "{err}");
+    assert!(err.to_string().contains("still 'balanced'"), "{err}");
+
+    let info = client.thermal_profiles().await?;
+    assert_eq!(
+        info.active,
+        Some(ThermalProfileId::Balanced),
+        "real state retained"
+    );
+    let perf = info
+        .choices
+        .iter()
+        .find(|c| c.id == ThermalProfileId::Performance)
+        .ok_or("choice")?;
+    assert_eq!(perf.state, ChoiceState::Unsupported);
+
+    let writes = fw.writes.lock().map_err(|_| "poisoned")?.len();
+    let err = client
+        .set_thermal_profile(&ThermalProfileId::Performance)
+        .await
+        .expect_err("disabled");
+    assert_eq!(err.kind(), Some(ErrorKind::Unsupported), "{err}");
+    assert_eq!(
+        fw.writes.lock().map_err(|_| "poisoned")?.len(),
+        writes,
+        "firmware not retried"
+    );
+
+    assert!(
+        client
+            .set_thermal_profile(&ThermalProfileId::Quiet)
+            .await
+            .is_ok(),
+        "others still work"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepted_but_unapplied_changes_report_the_real_state() -> TestResult {
+    let fw = Firmware::new(vec![], true);
+    let h = harness!(Authorizer::AllowAll, fw.factory());
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+    let err = client
+        .set_thermal_profile(&ThermalProfileId::Quiet)
+        .await
+        .expect_err("unconfirmed");
+    assert_eq!(err.kind(), Some(ErrorKind::NotConfirmed), "{err}");
+    assert!(
+        err.to_string().contains("active profile is 'balanced'"),
+        "{err}"
+    );
+    assert_eq!(
+        client.thermal_profiles().await?.active,
+        Some(ThermalProfileId::Balanced)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_are_rate_limited_before_authorization() -> TestResult {
+    // DenyAll: a request that passes the limiter is refused as NotAuthorized;
+    // once the burst is spent the limiter answers first, so a flood can never
+    // reach polkit and spam password prompts.
+    let h = harness!();
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+    for i in 0..8 {
+        let err = client
+            .set_thermal_profile(&ThermalProfileId::Quiet)
+            .await
+            .expect_err("denied");
+        assert_eq!(
+            err.kind(),
+            Some(ErrorKind::NotAuthorized),
+            "request {i}: {err}"
+        );
+    }
+    let err = client
+        .set_thermal_profile(&ThermalProfileId::Quiet)
+        .await
+        .expect_err("limited");
+    assert_eq!(err.kind(), Some(ErrorKind::RateLimited), "{err}");
+
+    // Another client has its own budget.
+    let other = h.connect().await?;
+    let err = Client::new(&other)
+        .await?
+        .set_thermal_profile(&ThermalProfileId::Quiet)
+        .await
+        .expect_err("denied");
+    assert_eq!(err.kind(), Some(ErrorKind::NotAuthorized));
+    Ok(())
+}
+
+#[tokio::test]
+async fn machines_without_profiles_say_so() -> TestResult {
+    let h = harness!(Authorizer::AllowAll, Arc::new(|_, _| None));
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+    let info = client.thermal_profiles().await?;
+    assert!(!info.available && info.choices.is_empty());
+    let err = client
+        .set_thermal_profile(&ThermalProfileId::Quiet)
+        .await
+        .expect_err("unavailable");
+    assert_eq!(err.kind(), Some(ErrorKind::Unavailable), "{err}");
     Ok(())
 }

@@ -1,12 +1,16 @@
 //! Shared daemon state: discovery results, the sampler and the history ring.
 
 use std::collections::BTreeSet;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rq_core::{CapabilityStatus, HardwareIdentity, History, TelemetrySample};
+use rq_core::{CapabilityStatus, HardwareIdentity, History, TelemetrySample, ThermalProfileId};
+use rq_hardware::profile::{ProfileIo, SysfsProfileIo};
 use rq_hardware::{Sampler, SystemRoot, SystemSnapshot, capabilities};
-use rq_ipc::{DaemonStatus, MAX_SUBSCRIBERS};
+use rq_ipc::{DaemonStatus, MAX_SUBSCRIBERS, ThermalProfilesInfo};
+
+use crate::limits::RateLimiter;
+use crate::profile::{Change, ProfileController, SetError};
 
 /// Smallest and largest allowed sampling interval.
 pub const MIN_INTERVAL: Duration = Duration::from_millis(250);
@@ -38,6 +42,14 @@ impl Config {
     }
 }
 
+/// Chooses the profile interface to control for a discovered system.
+pub type ProfileIoFactory =
+    Arc<dyn Fn(&SystemRoot, &SystemSnapshot) -> Option<Arc<dyn ProfileIo>> + Send + Sync>;
+
+fn default_profile_factory() -> ProfileIoFactory {
+    Arc::new(|root, snap| SysfsProfileIo::select(root, &snap.platform_profile))
+}
+
 /// Returned by [`Shared::subscribe`] when the subscriber limit is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooManySubscribers;
@@ -57,7 +69,11 @@ pub struct Shared {
     root: SystemRoot,
     config: Config,
     started: Instant,
+    profile_factory: ProfileIoFactory,
     inner: Mutex<Inner>,
+    profile: Mutex<ProfileController>,
+    limiter: Mutex<RateLimiter>,
+    announced_profile: Mutex<Option<ThermalProfileId>>,
 }
 
 /// Unix time in milliseconds.
@@ -70,7 +86,19 @@ pub fn now_ms() -> u64 {
 impl Shared {
     /// Discovers hardware and builds the initial state.
     pub fn new(root: SystemRoot, config: Config) -> Self {
+        Self::with_profile_factory(root, config, default_profile_factory())
+    }
+
+    /// Like [`Self::new`] with a custom profile interface (tests inject
+    /// simulated firmware here).
+    pub fn with_profile_factory(
+        root: SystemRoot,
+        config: Config,
+        profile_factory: ProfileIoFactory,
+    ) -> Self {
         let snap = SystemSnapshot::discover(&root);
+        let io = profile_factory(&root, &snap);
+        let initial_profile = io.as_ref().and_then(|i| i.read_active().ok());
         let inner = Inner {
             identity: snap.identity.clone(),
             capabilities: capabilities::evaluate(&snap),
@@ -84,7 +112,11 @@ impl Shared {
             root,
             config,
             started: Instant::now(),
+            profile_factory,
             inner: Mutex::new(inner),
+            profile: Mutex::new(ProfileController::new(io)),
+            limiter: Mutex::new(RateLimiter::new()),
+            announced_profile: Mutex::new(initial_profile),
         }
     }
 
@@ -104,6 +136,11 @@ impl Shared {
         let snap = SystemSnapshot::discover(&self.root);
         let caps = capabilities::evaluate(&snap);
         let sampler = Sampler::new(self.root.clone(), &snap);
+        let io = (self.profile_factory)(&self.root, &snap);
+        self.profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace_io(io);
         let mut inner = self.lock();
         let changed = inner.capabilities != caps;
         inner.identity = snap.identity;
@@ -170,6 +207,61 @@ impl Shared {
     /// Removes a client.
     pub fn unsubscribe(&self, client: &str) {
         self.lock().subscribers.remove(client);
+    }
+
+    /// Forgets everything about a client that disconnected.
+    pub fn client_gone(&self, client: &str) {
+        self.unsubscribe(client);
+        self.limiter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget(client);
+    }
+
+    /// Takes a rate-limit token for a client's hardware-changing request.
+    pub fn allow_request(&self, client: &str) -> bool {
+        self.limiter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .allow(client, Instant::now())
+    }
+
+    /// Thermal profile choices and state, read live. Blocking.
+    pub fn thermal_profiles(&self) -> ThermalProfilesInfo {
+        self.profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .info()
+    }
+
+    /// Changes the thermal profile and verifies it. Blocking.
+    pub fn set_thermal_profile(&self, requested: ThermalProfileId) -> Result<Change, SetError> {
+        let outcome = self
+            .profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set(requested);
+        // Whatever happened, the kernel's state may have changed: make the
+        // next sample re-read it instead of serving a cached value.
+        self.lock().sampler.invalidate_slow();
+        outcome
+    }
+
+    /// Records the profile clients have been told about. Returns the
+    /// previous value if `current` differs, so exactly one caller announces
+    /// each change.
+    pub fn announce_profile(
+        &self,
+        current: Option<ThermalProfileId>,
+    ) -> Option<Option<ThermalProfileId>> {
+        let mut last = self
+            .announced_profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *last == current {
+            return None;
+        }
+        Some(std::mem::replace(&mut *last, current))
     }
 
     /// Whether anyone wants live telemetry.

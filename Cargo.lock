@@ -555,6 +555,7 @@ dependencies = [
  "tracing-subscriber",
  "udev",
  "zbus",
+ "zbus_polkit",
 ]
 
 [[package]]
@@ -589,6 +590,7 @@ version = "0.1.0"
 dependencies = [
  "rq-core",
  "rq-testkit",
+ "rustix",
  "serde",
  "serde_json",
  "tracing",
@@ -725,6 +727,12 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strsim"
@@ -1173,6 +1181,19 @@ dependencies = [
  "serde",
  "winnow",
  "zvariant",
+]
+
+[[package]]
+name = "zbus_polkit"
+version = "5.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "283d50dac36a7fee0d9c2e6b9c71253326c1f863a9d350342d338637aa3019ae"
+dependencies = [
+ "enumflags2",
+ "serde",
+ "serde_repr",
+ "static_assertions",
+ "zbus",
 ]
 
 [[package]]

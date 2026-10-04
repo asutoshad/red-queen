@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
+use redqueend::authz::Authorizer;
 use redqueend::runtime::{spawn_client_cleanup, spawn_core};
 use redqueend::service::DaemonService;
 use redqueend::state::{Config, Shared};
@@ -67,6 +68,13 @@ async fn main() -> anyhow::Result<()> {
         "starting redqueend"
     );
 
+    let authorizer = Arc::new(match args.bus {
+        Bus::System => Authorizer::polkit().await.context("connecting to polkit")?,
+        Bus::Session => Authorizer::DenyAll(
+            "hardware control is disabled on the development (session) bus".into(),
+        ),
+    });
+
     let builder = match args.bus {
         Bus::System => zbus::connection::Builder::system(),
         Bus::Session => zbus::connection::Builder::session(),
@@ -74,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     .context("connecting to the message bus")?;
     let conn = builder
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, DaemonService::new(shared.clone()))?
+        .serve_at(OBJECT_PATH, DaemonService::new(shared.clone(), authorizer))?
         .build()
         .await
         .with_context(|| format!("claiming {BUS_NAME} (is the D-Bus policy installed?)"))?;

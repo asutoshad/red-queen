@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::service::{emit_capabilities_changed, emit_telemetry};
+use crate::service::{emit_capabilities_changed, emit_profile_changed, emit_telemetry};
 use crate::state::Shared;
 
 /// Subsystems whose events can change what the hardware exposes.
@@ -57,6 +57,14 @@ async fn telemetry_loop(shared: Arc<Shared>, conn: zbus::Connection) {
                 continue;
             }
         };
+        // Fn-key or firmware-initiated profile changes show up here.
+        if sample.thermal_profile.is_some()
+            && let Some(previous) = shared.announce_profile(sample.thermal_profile.clone())
+            && let Some(current) = &sample.thermal_profile
+            && let Err(e) = emit_profile_changed(&conn, previous.as_ref(), current).await
+        {
+            debug!(error = %e, "could not emit ThermalProfileChanged");
+        }
         if shared.has_subscribers()
             && let Err(e) = emit_telemetry(&conn, &sample).await
         {
@@ -106,7 +114,7 @@ async fn client_cleanup(shared: Arc<Shared>, conn: zbus::Connection) {
         while let Some(signal) = stream.next().await {
             let Ok(args) = signal.args() else { continue };
             if args.new_owner().is_none() && args.name().as_str().starts_with(':') {
-                shared.unsubscribe(args.name().as_str());
+                shared.client_gone(args.name().as_str());
             }
         }
         Ok(())
