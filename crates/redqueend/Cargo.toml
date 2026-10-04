@@ -1,0 +1,33 @@
+[package]
+name = "redqueend"
+description = "The Red Queen system daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rq-core.workspace = true
+rq-hardware.workspace = true
+rq-ipc.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-journald.workspace = true
+tracing-subscriber.workspace = true
+udev.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+rq-testkit.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true
