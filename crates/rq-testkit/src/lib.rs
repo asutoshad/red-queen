@@ -91,6 +91,8 @@ pub mod presets {
     use super::FakeSystem;
     use std::io;
 
+    pub use super::add_acer_pwm_files as add_acer_pwm;
+
     /// Serial strings planted in fixtures. Probe output must never
     /// contain them.
     pub const PLANTED_SECRETS: [&str; 4] = [
@@ -300,6 +302,18 @@ pub mod presets {
             .symlink("/sys/class/hwmon/hwmon7", &h)?;
         Ok(())
     }
+}
+
+/// Adds `pwmN` / `pwmN_enable` files to the acer hwmon device of
+/// [`presets::anv15_51`], as a kernel with fan-control support would
+/// expose them (0644, 50 % duty, automatic mode).
+pub fn add_acer_pwm_files(fs: &FakeSystem) -> io::Result<()> {
+    let h = "/sys/devices/platform/acer-wmi/hwmon/hwmon7";
+    for n in [1, 2] {
+        fs.file_mode(&format!("{h}/pwm{n}"), "128", 0o644)?
+            .file_mode(&format!("{h}/pwm{n}_enable"), "2", 0o644)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

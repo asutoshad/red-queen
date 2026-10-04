@@ -6,6 +6,7 @@
 
 pub mod acer;
 pub mod capabilities;
+pub mod fan;
 pub mod gpu;
 pub mod hwmon;
 pub mod identity;
