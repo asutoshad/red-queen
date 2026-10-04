@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use rq_core::{FanRole, TelemetrySample, TemperatureUnit, ThermalProfileId};
-use rq_ipc::{ChoiceState, Client, ClientError, ErrorKind};
+use rq_ipc::{ChoiceState, Client, ClientError, ErrorKind, FansInfo};
 
 use crate::Bus;
 
@@ -33,6 +33,148 @@ fn explain(e: ClientError) -> anyhow::Error {
     } else {
         anyhow::Error::new(e)
     }
+}
+
+fn write_fans(out: &mut impl Write, info: &FansInfo, unit: TemperatureUnit) -> io::Result<()> {
+    if !info.available {
+        writeln!(out, "This machine exposes no fan sensors.")?;
+        writeln!(
+            out,
+            "On the Acer Nitro ANV15-51 the acer_wmi driver needs the option predator_v4=1; see `redqueen probe`."
+        )?;
+        return Ok(());
+    }
+    writeln!(out, "Fans")?;
+    for f in &info.fans {
+        let rpm = f.rpm.map_or("n/a".to_owned(), |r| format!("{} RPM", r.0));
+        let mode = match f.mode {
+            Some(rq_core::FanMode::Auto) => "auto".to_owned(),
+            Some(rq_core::FanMode::Max) => "max".to_owned(),
+            Some(rq_core::FanMode::Custom) => format!(
+                "manual {}",
+                f.duty_percent.map_or("?".into(), |d| format!("{d} %"))
+            ),
+            None => "unknown".to_owned(),
+        };
+        let note = if f.role_verified {
+            ""
+        } else {
+            "   (which fan this is comes from the driver's channel order; unverified)"
+        };
+        writeln!(out, "  {:<6} {rpm:<10} {mode}{note}", f.id)?;
+    }
+    if !info.controllable {
+        writeln!(
+            out,
+            "\nFan speeds can be read, but this machine can't control them yet:"
+        )?;
+        writeln!(
+            out,
+            "the kernel driver has no fan control for this model. See `redqueen probe`."
+        )?;
+        return Ok(());
+    }
+    let s = &info.safety;
+    let t = |c: u32| {
+        let m = rq_core::MilliCelsius(i32::try_from(c * 1000).unwrap_or(i32::MAX));
+        match unit {
+            TemperatureUnit::Celsius => format!("{} °C", unit.convert(m).round()),
+            TemperatureUnit::Fahrenheit => format!("{} °F", unit.convert(m).round()),
+        }
+    };
+    writeln!(
+        out,
+        "\nSafety: manual speed is never below {} %; control returns to automatic if the CPU reaches {} or the GPU {}.",
+        s.min_percent,
+        t(s.critical_cpu_celsius),
+        t(s.critical_gpu_celsius)
+    )?;
+    if s.tripped {
+        writeln!(
+            out,
+            "Manual control is locked out for {} more seconds because {}.",
+            s.lockout_remaining_s,
+            s.reason.as_deref().unwrap_or("of a safety trip")
+        )?;
+    }
+    Ok(())
+}
+
+/// `redqueen fan status`.
+pub async fn fan_status(
+    bus: Bus,
+    unit: TemperatureUnit,
+    out: &mut impl Write,
+) -> anyhow::Result<()> {
+    let conn = connect(bus).await?;
+    let info = Client::new(&conn)
+        .await
+        .map_err(explain)?
+        .fans()
+        .await
+        .map_err(explain)?;
+    write_fans(out, &info, unit)?;
+    Ok(())
+}
+
+/// `redqueen fan auto` and `redqueen fan max`.
+pub async fn fan_mode(
+    bus: Bus,
+    mode: &str,
+    unit: TemperatureUnit,
+    out: &mut impl Write,
+) -> anyhow::Result<()> {
+    let conn = connect(bus).await?;
+    let info = Client::new(&conn)
+        .await
+        .map_err(explain)?
+        .set_fan_mode(mode)
+        .await
+        .map_err(explain)?;
+    writeln!(
+        out,
+        "Fans are now under {} control (confirmed by the hardware).\n",
+        if mode == "max" {
+            "full-speed"
+        } else {
+            "automatic"
+        }
+    )?;
+    write_fans(out, &info, unit)?;
+    if mode == "max" {
+        writeln!(
+            out,
+            "\nReturn to automatic control any time with: redqueen fan auto"
+        )?;
+    }
+    Ok(())
+}
+
+/// `redqueen fan cpu <percent>` and `redqueen fan gpu <percent>`.
+pub async fn fan_speed(
+    bus: Bus,
+    fan: &str,
+    percent: u32,
+    unit: TemperatureUnit,
+    out: &mut impl Write,
+) -> anyhow::Result<()> {
+    let conn = connect(bus).await?;
+    let info = Client::new(&conn)
+        .await
+        .map_err(explain)?
+        .set_fan_speed(fan, percent)
+        .await
+        .map_err(explain)?;
+    writeln!(
+        out,
+        "The {fan} fan is now under manual control at {percent} % (confirmed by the hardware).\n"
+    )?;
+    write_fans(out, &info, unit)?;
+    writeln!(
+        out,
+        "\nManual control is watched by the safety layer. Return to automatic control any time with: redqueen fan auto"
+    )?;
+    Ok(())
 }
 
 /// `redqueen profile list`.

@@ -44,9 +44,32 @@ enum Command {
     /// Thermal profiles.
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Fan status and control.
+    #[command(subcommand)]
+    Fan(FanCommand),
     /// Daemon commands.
     #[command(subcommand)]
     Daemon(DaemonCommand),
+}
+
+#[derive(Subcommand)]
+enum FanCommand {
+    /// Show fan speeds, modes and the safety limits.
+    Status,
+    /// Hand every fan back to the firmware's automatic control.
+    Auto,
+    /// Run every fan at full speed.
+    Max,
+    /// Manual speed for the CPU fan, in percent.
+    Cpu {
+        /// Speed, not below the safe minimum shown by `fan status`.
+        percent: u32,
+    },
+    /// Manual speed for the GPU fan, in percent.
+    Gpu {
+        /// Speed, not below the safe minimum shown by `fan status`.
+        percent: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -102,6 +125,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Probe(args) => probe(&args),
         Command::Status => block_on(status::status(cli.bus, unit, &mut io::stdout().lock())),
+        Command::Fan(cmd) => {
+            let out = &mut io::stdout().lock();
+            match cmd {
+                FanCommand::Status => block_on(status::fan_status(cli.bus, unit, out)),
+                FanCommand::Auto => block_on(status::fan_mode(cli.bus, "auto", unit, out)),
+                FanCommand::Max => block_on(status::fan_mode(cli.bus, "max", unit, out)),
+                FanCommand::Cpu { percent } => {
+                    block_on(status::fan_speed(cli.bus, "cpu", percent, unit, out))
+                }
+                FanCommand::Gpu { percent } => {
+                    block_on(status::fan_speed(cli.bus, "gpu", percent, unit, out))
+                }
+            }
+        }
         Command::Profile(ProfileCommand::List) => {
             block_on(status::profile_list(cli.bus, &mut io::stdout().lock()))
         }
