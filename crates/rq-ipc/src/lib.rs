@@ -152,6 +152,56 @@ pub struct SetProfileResult {
     pub active: rq_core::ThermalProfileId,
 }
 
+/// One fan as reported to clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanInfo {
+    /// Name used to address it: `cpu`, `gpu`, or `<chip>/<n>`.
+    pub id: String,
+    /// What it cools.
+    pub role: rq_core::FanRole,
+    /// The role was confirmed (from a driver label), not just inferred from
+    /// the driver's channel order.
+    pub role_verified: bool,
+    /// Speed, if readable.
+    pub rpm: Option<rq_core::Rpm>,
+    /// Mode as read back from the hardware.
+    pub mode: Option<rq_core::FanMode>,
+    /// Duty cycle as read back from the hardware.
+    pub duty_percent: Option<u8>,
+    /// What was last requested through this daemon (custom mode).
+    pub requested_percent: Option<u8>,
+}
+
+/// Fan safety state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafetyStatus {
+    /// Manual control was abandoned recently and is locked out.
+    pub tripped: bool,
+    /// Why, in words.
+    pub reason: Option<String>,
+    /// Seconds until manual control is allowed again.
+    pub lockout_remaining_s: u64,
+    /// Lowest manual fan speed accepted.
+    pub min_percent: u8,
+    /// CPU temperature at which manual control is abandoned, °C.
+    pub critical_cpu_celsius: u32,
+    /// GPU temperature at which manual control is abandoned, °C.
+    pub critical_gpu_celsius: u32,
+}
+
+/// Fan state and limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FansInfo {
+    /// Fan speeds can be read.
+    pub available: bool,
+    /// Fans can be controlled.
+    pub controllable: bool,
+    /// The fans.
+    pub fans: Vec<FanInfo>,
+    /// Safety limits and state.
+    pub safety: SafetyStatus,
+}
+
 mod proxy {
     //! Generated D-Bus proxy (the macro's output can't carry docs).
     #![allow(missing_docs)]
@@ -178,6 +228,14 @@ mod proxy {
         /// Switches the thermal profile (JSON `SetProfileResult`). Needs
         /// authorization; read back and verified by the daemon.
         fn set_thermal_profile(&self, profile: &str) -> zbus::Result<String>;
+        /// Fan state and safety limits (JSON `FansInfo`).
+        fn get_fans(&self) -> zbus::Result<String>;
+        /// Sets every fan to `auto` (firmware control, no authorization needed)
+        /// or `max` (full speed). Returns JSON `FansInfo`.
+        fn set_fan_mode(&self, mode: &str) -> zbus::Result<String>;
+        /// Puts one fan under manual control at `percent` (not below the safe
+        /// minimum). Returns JSON `FansInfo`.
+        fn set_fan_speed(&self, fan: &str, percent: u32) -> zbus::Result<String>;
         /// Starts `TelemetryUpdated` signals for this client.
         fn subscribe(&self) -> zbus::Result<()>;
         /// Stops `TelemetryUpdated` signals for this client.
@@ -190,6 +248,12 @@ mod proxy {
         /// The thermal profile changed (by any client, or by the firmware).
         #[zbus(signal)]
         fn thermal_profile_changed(&self, previous: String, current: String) -> zbus::Result<()>;
+        /// Fan control changed: `summary` is `auto`, `max` or `custom`.
+        #[zbus(signal)]
+        fn fan_mode_changed(&self, summary: String) -> zbus::Result<()>;
+        /// The safety layer handed fan control back to the firmware.
+        #[zbus(signal)]
+        fn safety_event(&self, code: String, message: String) -> zbus::Result<()>;
         /// Hardware was rediscovered and capabilities changed.
         #[zbus(signal)]
         fn capabilities_changed(&self) -> zbus::Result<()>;
@@ -296,6 +360,23 @@ impl<'a> Client<'a> {
     pub async fn hardware_identity(&self) -> Result<HardwareIdentity, ClientError> {
         Ok(serde_json::from_str(
             &self.proxy.get_hardware_identity().await?,
+        )?)
+    }
+
+    /// Fan state and safety limits.
+    pub async fn fans(&self) -> Result<FansInfo, ClientError> {
+        Ok(serde_json::from_str(&self.proxy.get_fans().await?)?)
+    }
+
+    /// Sets all fans to `auto` or `max`.
+    pub async fn set_fan_mode(&self, mode: &str) -> Result<FansInfo, ClientError> {
+        Ok(serde_json::from_str(&self.proxy.set_fan_mode(mode).await?)?)
+    }
+
+    /// Manual speed for one fan.
+    pub async fn set_fan_speed(&self, fan: &str, percent: u32) -> Result<FansInfo, ClientError> {
+        Ok(serde_json::from_str(
+            &self.proxy.set_fan_speed(fan, percent).await?,
         )?)
     }
 
