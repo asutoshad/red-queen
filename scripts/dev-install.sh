@@ -25,7 +25,8 @@ install -Dm644 "$root/packaging/dbus/io.github.asutoshad.RedQueen.Daemon.conf" \
 
 systemctl daemon-reload
 systemctl reload dbus
-systemctl enable --now redqueend.service
+systemctl enable redqueend.service
+systemctl restart redqueend.service
 echo
 systemctl --no-pager --lines=5 status redqueend.service || true
 echo
