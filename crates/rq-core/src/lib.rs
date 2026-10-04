@@ -19,5 +19,5 @@ pub use power::BatteryState;
 pub use telemetry::{
     BatterySummary, CpuStatus, FanReading, GpuStatus, History, MemoryStatus, TelemetrySample,
 };
-pub use thermal::ThermalProfileId;
+pub use thermal::{InvalidProfileName, ThermalProfileId};
 pub use units::{DutyScale, MilliCelsius, Percent, PercentOutOfRange, Rpm, TemperatureUnit};

@@ -353,7 +353,10 @@ fn battery_is_read_on_the_slow_schedule() -> TestResult {
     assert_eq!(capacity(&slow.sample(0)), Some(87));
     fs.file(&format!("{bat}/capacity"), "50")?;
     assert_eq!(capacity(&slow.sample(1)), Some(87), "served from the cache");
-    fs.file("/sys/firmware/acpi/platform_profile", "quiet")?;
+    fs.file(
+        "/sys/class/platform-profile/platform-profile-0/profile",
+        "quiet",
+    )?;
     assert_eq!(
         slow.sample(2).thermal_profile,
         Some(ThermalProfileId::Balanced),
@@ -368,6 +371,26 @@ fn battery_is_read_on_the_slow_schedule() -> TestResult {
     assert_eq!(capacity(&fast.sample(1)), Some(40));
     assert_eq!(
         fast.sample(2).thermal_profile,
+        Some(ThermalProfileId::Quiet)
+    );
+    Ok(())
+}
+
+#[test]
+fn telemetry_reads_the_profile_the_daemon_controls() -> TestResult {
+    use rq_core::ThermalProfileId;
+    use rq_hardware::profile::SysfsProfileIo;
+    let fs = presets::anv15_51(true)?;
+    // The legacy firmware file disagrees with the acer handler (as it can
+    // when several handlers are registered).
+    fs.file("/sys/firmware/acpi/platform_profile", "custom")?;
+    let root = SystemRoot::at(fs.path());
+    let snap = SystemSnapshot::discover(&root);
+    let io = SysfsProfileIo::select(&root, &snap.platform_profile).ok_or("no profile io")?;
+    rq_hardware::profile::ProfileIo::write_active(io.as_ref(), &ThermalProfileId::Quiet)?;
+    let mut sampler = rq_hardware::Sampler::new(root, &snap);
+    assert_eq!(
+        sampler.sample(0).thermal_profile,
         Some(ThermalProfileId::Quiet)
     );
     Ok(())

@@ -57,6 +57,20 @@ impl SystemRoot {
         self.read_string(abs)?.trim().parse().ok()
     }
 
+    /// Writes `value` to an **existing** attribute file in a single write.
+    ///
+    /// Never creates files. Callers must only pass paths that discovery
+    /// found and that an operation's allow-list names; this function does
+    /// no policy checks of its own.
+    pub fn write_attr(&self, abs: impl AsRef<Path>, value: &str) -> io::Result<()> {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(self.path(abs))?;
+        file.write_all(value.as_bytes())
+    }
+
     /// Whether the path exists (following symlinks).
     pub fn exists(&self, abs: impl AsRef<Path>) -> bool {
         self.path(abs).exists()

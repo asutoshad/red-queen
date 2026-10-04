@@ -81,6 +81,12 @@ impl Sampler {
         }
     }
 
+    /// Forgets cached slow values so the next sample re-reads them, for
+    /// example right after a hardware write.
+    pub fn invalidate_slow(&mut self) {
+        self.slow = None;
+    }
+
     /// Changes how often battery, AC and the thermal profile are re-read.
     #[must_use]
     pub fn with_slow_refresh(mut self, every: Duration) -> Self {
@@ -325,14 +331,7 @@ fn resolve_sources(root: &SystemRoot, snap: &SystemSnapshot) -> Sources {
         .filter(|p| root.exists(p))
         .collect();
 
-    let profile = if snap.platform_profile.legacy.is_some() {
-        Some("/sys/firmware/acpi/platform_profile".to_owned())
-    } else {
-        snap.platform_profile
-            .handlers
-            .first()
-            .map(|h| format!("/sys/class/platform-profile/{}/profile", h.id))
-    };
+    let profile = crate::profile::select_paths(&snap.platform_profile).map(|p| p.profile);
 
     Sources {
         cpu_temp,

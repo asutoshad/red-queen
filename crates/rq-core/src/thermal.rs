@@ -2,6 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A profile name that doesn't pass [`ThermalProfileId::parse_untrusted`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("profile names are 1-64 characters of a-z, 0-9 and '-'")]
+pub struct InvalidProfileName;
+
 /// A platform thermal profile, independent of how a backend names it.
 ///
 /// Known Linux `platform_profile` names map to dedicated variants; anything
@@ -64,6 +69,24 @@ impl ThermalProfileId {
     /// Whether this is a profile this version understands.
     pub fn is_known(&self) -> bool {
         !matches!(self, Self::Other(_))
+    }
+
+    /// Parses a profile name received from a client.
+    ///
+    /// Stricter than [`Self::from_kernel_name`]: the name must be 1–64
+    /// characters of `a-z`, `0-9` and `-`. Nothing else is accepted, so a
+    /// client can never smuggle path separators or control characters
+    /// towards a sysfs write.
+    pub fn parse_untrusted(name: &str) -> Result<Self, InvalidProfileName> {
+        let ok = (1..=64).contains(&name.len())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if ok {
+            Ok(Self::from_kernel_name(name))
+        } else {
+            Err(InvalidProfileName)
+        }
     }
 
     /// Parses a whitespace-separated `platform_profile_choices` list.
@@ -132,6 +155,32 @@ mod tests {
                 ThermalProfileId::BalancedPerformance,
                 ThermalProfileId::Performance,
             ]
+        );
+    }
+
+    #[test]
+    fn untrusted_names_are_strictly_validated() {
+        for ok in ["quiet", "balanced-performance", "low-power", "mode2", "x"] {
+            assert!(ThermalProfileId::parse_untrusted(ok).is_ok(), "{ok}");
+        }
+        let long = "a".repeat(65);
+        for bad in [
+            "",
+            "Quiet",
+            "qu iet",
+            "quiet\n",
+            "../x",
+            "a/b",
+            "quiet\0",
+            "ünïcode",
+            "a_b",
+            long.as_str(),
+        ] {
+            assert!(ThermalProfileId::parse_untrusted(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            ThermalProfileId::parse_untrusted("turbo"),
+            Ok(ThermalProfileId::Other("turbo".into()))
         );
     }
 

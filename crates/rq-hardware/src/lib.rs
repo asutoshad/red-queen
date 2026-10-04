@@ -13,6 +13,7 @@ pub mod models;
 pub mod platform_profile;
 pub mod power_supply;
 pub mod probe;
+pub mod profile;
 pub mod redact;
 pub mod root;
 pub mod snapshot;
