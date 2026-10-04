@@ -1,0 +1,21 @@
+[package]
+name = "redqueen"
+description = "The Red Queen: control center for Acer Nitro laptops"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rq-core.workspace = true
+rq-hardware.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

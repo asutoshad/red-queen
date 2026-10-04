@@ -15,6 +15,26 @@ models are planned through capability-detecting backends.
 - [How it works](docs/architecture.md)
 - [Security model](docs/security.md)
 
+## Building from source
+
+On Kali or Debian:
+
+```sh
+sudo apt install cargo rustc build-essential pkgconf libgtk-4-dev libadwaita-1-dev gettext
+cargo build --release
+cargo test
+```
+
+Check what your laptop supports (read-only, no root needed):
+
+```sh
+cargo run --release -p redqueen -- probe            # human-readable
+cargo run --release -p redqueen -- probe --json     # for issue reports
+```
+
+The JSON report never contains serial numbers, UUIDs, MAC addresses,
+the hostname or the user name.
+
 ## Disclaimer
 
 This project is not affiliated with Acer. Acer, Nitro, NitroSense and Predator
