@@ -23,6 +23,9 @@ sed 's|^ExecStart=.*|ExecStart=/usr/local/bin/redqueend|' \
 install -Dm644 "$root/packaging/dbus/io.github.asutoshad.RedQueen.Daemon.conf" \
     /etc/dbus-1/system.d/io.github.asutoshad.RedQueen.Daemon.conf
 
+install -Dm644 "$root/packaging/polkit/io.github.asutoshad.RedQueen.policy" \
+    /usr/share/polkit-1/actions/io.github.asutoshad.RedQueen.policy
+
 systemctl daemon-reload
 systemctl reload dbus
 systemctl enable redqueend.service

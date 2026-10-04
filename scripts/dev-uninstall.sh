@@ -7,6 +7,7 @@ set -euo pipefail
 systemctl disable --now redqueend.service 2>/dev/null || true
 rm -f /etc/systemd/system/redqueend.service \
       /etc/dbus-1/system.d/io.github.asutoshad.RedQueen.Daemon.conf \
+      /usr/share/polkit-1/actions/io.github.asutoshad.RedQueen.policy \
       /usr/local/bin/redqueend /usr/local/bin/redqueen
 rm -rf /var/lib/red-queen
 systemctl daemon-reload
