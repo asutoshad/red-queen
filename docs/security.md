@@ -38,15 +38,38 @@ project's own application.
 Bus name `io.github.asutoshad.RedQueen.Daemon` on the system bus.
 
 **Implemented today:** the read-only methods (`GetCapabilities`, `GetStatus`,
-`GetTelemetry`, `GetHistory`, `GetHardwareIdentity`) and the telemetry
-subscription (`Subscribe`, `Unsubscribe`). Rows marked *(planned)* below are
-added together with the feature they control, and are listed here so the
-authorization model is visible in advance.
+`GetTelemetry`, `GetHistory`, `GetHardwareIdentity`, `GetThermalProfiles`),
+the telemetry subscription (`Subscribe`, `Unsubscribe`) and
+`SetThermalProfile`. Rows marked *(planned)* below are added together with
+the feature they control, and are listed here so the authorization model is
+visible in advance.
+
+### Order of checks for requests that change hardware
+
+1. **Rate limit** per client, so a flood can never reach the next steps (and
+   so can't spam password prompts).
+2. **Validate the arguments.** Bad input is refused here, before anything
+   asks the user for a password. Profile names must be 1–64 characters of
+   `a-z`, `0-9` and `-`, and must be one the hardware advertises.
+3. **polkit authorization** of the caller's bus connection (the daemon never
+   trusts a process id or user id sent by a client).
+4. **Write** to the one attribute the daemon itself discovered.
+5. **Read back and verify.** Success is reported only if the kernel confirms
+   the change; otherwise the client gets an error naming the real state.
+
+### Errors
+
+Failures use D-Bus error names under `io.github.asutoshad.RedQueen.Error`:
+`NotAuthorized`, `InvalidArgument`, `Unsupported`, `Rejected` (the firmware
+refused), `NotConfirmed` (accepted but not applied), `RateLimited`,
+`Unavailable`, `Failed`. A profile the firmware rejects is disabled
+(`Unsupported`) until the daemon restarts or the hardware interface changes,
+so a refused profile is never retried in a loop.
 
 | Method | Authorization |
 |---|---|
-| `GetCapabilities`, `GetStatus`, `GetTelemetry`, `GetHistory`, `GetHardwareIdentity`, `Subscribe`, `Unsubscribe` | none (read-only, no personal data) |
-| (planned) `SetThermalProfile` | `io.github.asutoshad.RedQueen.set-profile` |
+| `GetCapabilities`, `GetStatus`, `GetTelemetry`, `GetHistory`, `GetHardwareIdentity`, `GetThermalProfiles`, `Subscribe`, `Unsubscribe` | none (read-only, no personal data) |
+| `SetThermalProfile` | `io.github.asutoshad.RedQueen.set-profile` |
 | (planned) `SetFanMode` (Auto) | none: returning to firmware control is always allowed |
 | (planned) `SetFanMode` (Max/Custom), `SetFanSpeed`, `SetFanCurve` | `io.github.asutoshad.RedQueen.control-fans` |
 | (planned) `SetBatteryChargeLimit`, `StartBatteryCalibration`, `SetUsbCharging` | `io.github.asutoshad.RedQueen.battery` |
@@ -66,6 +89,8 @@ so no other program can impersonate it.
 | any action from inactive or remote sessions | `auth_admin` or denied |
 
 Administrators can override these with polkit rules in `/etc/polkit-1/rules.d/`.
+The shipped policy is `packaging/polkit/io.github.asutoshad.RedQueen.policy`;
+actions are added to it together with the features they protect.
 
 ### Abuse resistance
 - Writes are rate-limited and coalesced per client, so a misbehaving client

@@ -47,6 +47,14 @@ To install it as a real hardened service for testing, run
 `sudo scripts/dev-install.sh` after `cargo build --release`
 (`scripts/dev-uninstall.sh` removes it).
 
+Thermal profiles (needs the installed service; changing a profile is checked
+by polkit and confirmed by reading the hardware back):
+
+```sh
+redqueen profile list
+redqueen profile set quiet
+```
+
 The JSON report never contains serial numbers, UUIDs, MAC addresses,
 the hostname or the user name.
 
