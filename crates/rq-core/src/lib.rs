@@ -8,6 +8,7 @@ pub mod capability;
 pub mod fan;
 pub mod identity;
 pub mod power;
+pub mod telemetry;
 pub mod thermal;
 pub mod units;
 
@@ -15,5 +16,8 @@ pub use capability::{Backend, CapabilityStatus, Feature, Maturity, Reason};
 pub use fan::{FanMode, FanRole, RoleSource};
 pub use identity::{HardwareIdentity, KernelInfo, OsInfo};
 pub use power::BatteryState;
+pub use telemetry::{
+    BatterySummary, CpuStatus, FanReading, GpuStatus, History, MemoryStatus, TelemetrySample,
+};
 pub use thermal::ThermalProfileId;
 pub use units::{DutyScale, MilliCelsius, Percent, PercentOutOfRange, Rpm, TemperatureUnit};

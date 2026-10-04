@@ -258,7 +258,20 @@ pub mod presets {
             "I: Bus=0011 Vendor=0001 Product=0001 Version=ab83\nN: Name=\"AT Translated Set 2 keyboard\"\n\nI: Bus=0019 Vendor=0000 Product=0000 Version=0000\nN: Name=\"Acer WMI hotkeys\"\n\nI: Bus=0005 Vendor=004c Product=0000 Version=0000\nN: Name=\"Someone's Headphones\"\n",
         )?
         .file("/sys/class/powercap/intel-rapl:0/name", "package-0")?
-        .file_mode("/sys/class/powercap/intel-rapl:0/energy_uj", "123456789", 0o400)?;
+        .file_mode("/sys/class/powercap/intel-rapl:0/energy_uj", "123456789", 0o400)?
+        .file("/sys/class/powercap/intel-rapl:0/max_energy_range_uj", "262143328850")?
+        .file(
+            "/proc/stat",
+            "cpu  1000 0 500 8000 100 0 0 0 0 0\ncpu0 500 0 250 4000 50 0 0 0 0 0\ncpu1 500 0 250 4000 50 0 0 0 0 0\nintr 0",
+        )?
+        .file(
+            "/proc/meminfo",
+            "MemTotal:       16000000 kB\nMemFree:  2000000 kB\nMemAvailable:    8000000 kB\nSwapTotal:       4000000 kB\nSwapFree:        4000000 kB",
+        )?
+        .file("/proc/uptime", "12345.67 40000.00")?
+        .file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "2400000")?
+        .file("/sys/devices/system/cpu/cpu1/cpufreq/scaling_cur_freq", "3600000")?
+        .dir("/sys/devices/system/cpu/cpufreq")?;
         Ok(())
     }
 

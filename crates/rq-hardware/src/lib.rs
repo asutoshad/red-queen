@@ -16,7 +16,9 @@ pub mod probe;
 pub mod redact;
 pub mod root;
 pub mod snapshot;
+pub mod telemetry;
 
 pub use probe::{ProbeContext, ProbeReport};
 pub use root::SystemRoot;
 pub use snapshot::SystemSnapshot;
+pub use telemetry::Sampler;

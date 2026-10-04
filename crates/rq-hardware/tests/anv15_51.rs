@@ -262,3 +262,78 @@ fn empty_system_does_not_panic() -> TestResult {
     assert!(!report.summary.acer_wmi);
     Ok(())
 }
+
+#[test]
+fn telemetry_sample() -> TestResult {
+    use rq_core::{BatteryState, MilliCelsius, Rpm};
+    let fs = presets::anv15_51(true)?;
+    let root = SystemRoot::at(fs.path());
+    let snap = SystemSnapshot::discover(&root);
+    let mut sampler = rq_hardware::Sampler::new(root, &snap);
+
+    let first = sampler.sample(1_000);
+    assert_eq!(
+        first.cpu.usage_percent, None,
+        "no rate before the second sample"
+    );
+    assert_eq!(
+        first.cpu.temperature,
+        Some(MilliCelsius(48_000)),
+        "coretemp package sensor"
+    );
+    assert_eq!(first.cpu.avg_freq_mhz, Some(3000));
+    assert_eq!(first.cpu.max_freq_mhz, Some(3600));
+    assert_eq!(first.memory.used_percent(), Some(50.0));
+    assert_eq!(first.uptime_s, Some(12345));
+    assert_eq!(first.ac_online, Some(false));
+    assert_eq!(first.thermal_profile, Some(ThermalProfileId::Balanced));
+    let bat = first.battery.as_ref().ok_or("battery")?;
+    assert_eq!(bat.percent, Some(87));
+    assert_eq!(bat.state, Some(BatteryState::Discharging));
+    assert_eq!(bat.power_mw, Some(18_960), "1.2 A x 15.8 V");
+    assert_eq!(first.fans.len(), 2);
+    assert_eq!(first.fans[0].id, "acer/1");
+    assert_eq!(first.fans[0].role, FanRole::Cpu);
+    assert_eq!(first.fans[0].rpm, Some(Rpm(2331)));
+
+    let gpu = first.gpu.as_ref().ok_or("gpu")?;
+    assert!(gpu.asleep);
+    assert_eq!(gpu.temperature, None, "sleeping GPU is not read");
+
+    // Advance counters: 2000 more jiffies, 1000 of them busy.
+    fs.file(
+        "/proc/stat",
+        "cpu  1800 0 700 9000 100 0 0 0 0 0\ncpu0 900 0 350 4500 50 0 0 0 0 0\ncpu1 900 0 350 4500 50 0 0 0 0 0\nintr 0",
+    )?;
+    let second = sampler.sample(2_000);
+    assert_eq!(second.cpu.usage_percent, Some(50.0));
+    assert_eq!(second.cpu.per_core_percent, vec![50.0, 50.0]);
+    Ok(())
+}
+
+#[test]
+fn awake_gpu_zero_reading_is_none() -> TestResult {
+    let fs = presets::anv15_51(true)?;
+    fs.file(
+        "/sys/devices/pci0000:00/0000:00:01.0/0000:01:00.0/power/runtime_status",
+        "active",
+    )?;
+    let root = SystemRoot::at(fs.path());
+    let snap = SystemSnapshot::discover(&root);
+    let mut sampler = rq_hardware::Sampler::new(root, &snap);
+    let gpu = sampler.sample(0).gpu.ok_or("gpu")?;
+    assert!(!gpu.asleep);
+    assert_eq!(
+        gpu.temperature, None,
+        "acer temp2 = 0 means no reading, not 0 C"
+    );
+    fs.file(
+        "/sys/devices/platform/acer-wmi/hwmon/hwmon7/temp2_input",
+        "44000",
+    )?;
+    assert_eq!(
+        sampler.sample(1).gpu.and_then(|g| g.temperature),
+        Some(rq_core::MilliCelsius(44_000))
+    );
+    Ok(())
+}
