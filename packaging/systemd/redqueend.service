@@ -1,0 +1,51 @@
+[Unit]
+Description=The Red Queen hardware daemon
+Documentation=https://github.com/asutoshad/red-queen
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=io.github.asutoshad.RedQueen.Daemon
+ExecStart=/usr/bin/redqueend
+Restart=on-failure
+RestartSec=2
+StateDirectory=red-queen
+StateDirectoryMode=0750
+
+# Runs as root (sysfs hardware files are root-owned) but with no capabilities.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+UMask=0077
+
+# Filesystem: read-only everywhere except its own state directory.
+# /sys must stay writable for hardware control, so ProtectKernelTunables
+# is deliberately not set.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Devices: only the standard pseudo-devices.
+DevicePolicy=closed
+
+# No network; D-Bus and kernel device events only.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+
+# Everything else.
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+
+[Install]
+WantedBy=multi-user.target
