@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rq_core::{CapabilityStatus, HardwareIdentity, History, TelemetrySample, ThermalProfileId};
 use rq_hardware::profile::{ProfileIo, SysfsProfileIo};
-use rq_hardware::{Sampler, SystemRoot, SystemSnapshot, capabilities};
+use rq_hardware::{Sampler, SystemRoot, SystemSnapshot, capabilities, models};
 use rq_ipc::{DaemonStatus, MAX_SUBSCRIBERS, ThermalProfilesInfo};
 
 use crate::limits::RateLimiter;
@@ -45,6 +45,20 @@ impl Config {
 /// Chooses the profile interface to control for a discovered system.
 pub type ProfileIoFactory =
     Arc<dyn Fn(&SystemRoot, &SystemSnapshot) -> Option<Arc<dyn ProfileIo>> + Send + Sync>;
+
+/// Profiles this exact model and BIOS are known (from hardware tests) to
+/// reject. Empty on anything untested, so the firmware decides.
+fn known_rejected_profiles(snap: &SystemSnapshot) -> Vec<ThermalProfileId> {
+    models::lookup(&snap.identity)
+        .filter(|m| m.verified_on(&snap.identity))
+        .map(|m| {
+            m.rejected_profiles
+                .iter()
+                .map(|n| ThermalProfileId::from_kernel_name(n))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 fn default_profile_factory() -> ProfileIoFactory {
     Arc::new(|root, snap| SysfsProfileIo::select(root, &snap.platform_profile))
@@ -114,7 +128,11 @@ impl Shared {
             started: Instant::now(),
             profile_factory,
             inner: Mutex::new(inner),
-            profile: Mutex::new(ProfileController::new(io)),
+            profile: Mutex::new({
+                let mut controller = ProfileController::new(io);
+                controller.set_known_rejected(known_rejected_profiles(&snap));
+                controller
+            }),
             limiter: Mutex::new(RateLimiter::new()),
             announced_profile: Mutex::new(initial_profile),
         }
@@ -137,10 +155,11 @@ impl Shared {
         let caps = capabilities::evaluate(&snap);
         let sampler = Sampler::new(self.root.clone(), &snap);
         let io = (self.profile_factory)(&self.root, &snap);
-        self.profile
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .replace_io(io);
+        {
+            let mut controller = self.profile.lock().unwrap_or_else(PoisonError::into_inner);
+            controller.replace_io(io);
+            controller.set_known_rejected(known_rejected_profiles(&snap));
+        }
         let mut inner = self.lock();
         let changed = inner.capabilities != caps;
         inner.identity = snap.identity;

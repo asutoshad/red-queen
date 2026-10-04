@@ -60,7 +60,7 @@ pub async fn profile_list(bus: Bus, out: &mut impl Write) -> anyhow::Result<()> 
             " "
         };
         let note = match (info.active.as_ref() == Some(&c.id), c.state) {
-            (_, ChoiceState::Unsupported) => "  not supported by the firmware (rejected earlier)",
+            (_, ChoiceState::Unsupported) => "  not supported by this hardware",
             (true, _) => "  active",
             _ => "",
         };

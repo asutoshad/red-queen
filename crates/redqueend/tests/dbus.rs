@@ -369,11 +369,16 @@ async fn profile_choices_are_listed() -> TestResult {
     assert!(info.available);
     assert_eq!(info.active, Some(ThermalProfileId::Balanced));
     assert_eq!(info.choices.len(), 5);
-    assert!(
-        info.choices
-            .iter()
-            .all(|c| c.state == ChoiceState::Available)
-    );
+    // The fixture is a tested model on its tested BIOS, where the firmware
+    // is known to reject `performance`: it is listed but disabled.
+    for c in &info.choices {
+        let expected = if c.id == ThermalProfileId::Performance {
+            ChoiceState::Unsupported
+        } else {
+            ChoiceState::Available
+        };
+        assert_eq!(c.state, expected, "{:?}", c.id);
+    }
     Ok(())
 }
 
@@ -477,6 +482,9 @@ async fn profiles_the_hardware_does_not_offer_are_refused() -> TestResult {
 async fn firmware_rejection_marks_the_profile_unsupported() -> TestResult {
     let fw = Firmware::new(vec![ThermalProfileId::Performance], false);
     let h = harness!(Authorizer::AllowAll, fw.factory());
+    // An untested BIOS: nothing is known in advance, so the firmware decides.
+    h.fs.file("/sys/class/dmi/id/bios_version", "V9.99")?;
+    h.shared.rediscover();
     let conn = h.connect().await?;
     let client = Client::new(&conn).await?;
 
@@ -592,5 +600,32 @@ async fn machines_without_profiles_say_so() -> TestResult {
         .await
         .expect_err("unavailable");
     assert_eq!(err.kind(), Some(ErrorKind::Unavailable), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn profiles_known_to_be_rejected_never_reach_the_firmware() -> TestResult {
+    // This model + BIOS was tested: `performance` is rejected by the
+    // firmware, so the daemon refuses it without asking.
+    let fw = Firmware::new(vec![], false); // this firmware would even accept it
+    let h = harness!(Authorizer::AllowAll, fw.factory());
+    let conn = h.connect().await?;
+    let client = Client::new(&conn).await?;
+    let err = client
+        .set_thermal_profile(&ThermalProfileId::Performance)
+        .await
+        .expect_err("known");
+    assert_eq!(err.kind(), Some(ErrorKind::Unsupported), "{err}");
+    assert!(err.to_string().contains("verified on hardware"), "{err}");
+    assert!(
+        fw.writes.lock().map_err(|_| "poisoned")?.is_empty(),
+        "no write was attempted"
+    );
+    assert!(
+        client
+            .set_thermal_profile(&ThermalProfileId::Quiet)
+            .await
+            .is_ok()
+    );
     Ok(())
 }

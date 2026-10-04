@@ -37,7 +37,10 @@ pub struct Change {
 #[derive(Debug, Default)]
 pub struct ProfileController {
     io: Option<Arc<dyn ProfileIo>>,
+    /// Rejected by the firmware during this run.
     rejected: BTreeSet<ThermalProfileId>,
+    /// Known to be rejected on this model and BIOS (from hardware tests).
+    known_rejected: BTreeSet<ThermalProfileId>,
 }
 
 impl ProfileController {
@@ -46,7 +49,19 @@ impl ProfileController {
         Self {
             io,
             rejected: BTreeSet::new(),
+            known_rejected: BTreeSet::new(),
         }
+    }
+
+    /// Profiles known to be rejected by this model's firmware. They are
+    /// shown as unsupported and never written. Pass an empty set for
+    /// machines without verified knowledge, so the firmware decides.
+    pub fn set_known_rejected(&mut self, profiles: impl IntoIterator<Item = ThermalProfileId>) {
+        self.known_rejected = profiles.into_iter().collect();
+    }
+
+    fn is_disabled(&self, id: &ThermalProfileId) -> bool {
+        self.rejected.contains(id) || self.known_rejected.contains(id)
     }
 
     /// Switches to a different interface. Rejections learned on the old one
@@ -79,7 +94,7 @@ impl ProfileController {
                 .choices()
                 .into_iter()
                 .map(|id| ProfileChoice {
-                    state: if self.rejected.contains(&id) {
+                    state: if self.is_disabled(&id) {
                         ChoiceState::Unsupported
                     } else {
                         ChoiceState::Available
@@ -97,6 +112,12 @@ impl ProfileController {
         if !io.choices().contains(&requested) {
             return Err(SetError::InvalidArgument(format!(
                 "'{}' is not a profile this hardware offers",
+                requested.kernel_name()
+            )));
+        }
+        if self.known_rejected.contains(&requested) {
+            return Err(SetError::Unsupported(format!(
+                "this model's firmware does not accept '{}' (verified on hardware)",
                 requested.kernel_name()
             )));
         }
@@ -294,6 +315,44 @@ mod tests {
             Err(SetError::Failed(_))
         ));
         assert_eq!(c.info().choices[0].state, ChoiceState::Available);
+    }
+
+    #[test]
+    fn known_rejected_profiles_are_never_written() {
+        let (mut c, f) = controller(Fake::new());
+        c.set_known_rejected([ThermalProfileId::Performance]);
+        let states: Vec<_> = c
+            .info()
+            .choices
+            .iter()
+            .map(|x| (x.id.clone(), x.state))
+            .collect();
+        assert!(states.contains(&(ThermalProfileId::Performance, ChoiceState::Unsupported)));
+        let err = c
+            .set(ThermalProfileId::Performance)
+            .expect_err("known rejected");
+        let SetError::Unsupported(msg) = err else {
+            panic!("expected Unsupported")
+        };
+        assert!(msg.contains("verified on hardware"), "{msg}");
+        assert!(
+            f.writes.lock().expect("lock").is_empty(),
+            "the firmware was never asked"
+        );
+        assert!(c.set(ThermalProfileId::Quiet).is_ok());
+
+        // Knowledge survives an interface change (it belongs to the model).
+        c.replace_io(Some(Arc::new(Fake {
+            name: "other",
+            ..Fake::new()
+        })));
+        assert!(matches!(
+            c.set(ThermalProfileId::Performance),
+            Err(SetError::Unsupported(_))
+        ));
+        // Clearing it hands the decision back to the firmware.
+        c.set_known_rejected([]);
+        assert!(c.set(ThermalProfileId::Performance).is_ok());
     }
 
     #[test]
