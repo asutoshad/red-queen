@@ -41,9 +41,23 @@ enum Command {
     Probe(ProbeArgs),
     /// Show live status from the daemon.
     Status,
+    /// Thermal profiles.
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Daemon commands.
     #[command(subcommand)]
     Daemon(DaemonCommand),
+}
+
+#[derive(Subcommand)]
+enum ProfileCommand {
+    /// List the thermal profiles and show the active one.
+    List,
+    /// Switch the thermal profile (the result is confirmed by the hardware).
+    Set {
+        /// Profile name, as shown by `profile list`.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -88,6 +102,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Probe(args) => probe(&args),
         Command::Status => block_on(status::status(cli.bus, unit, &mut io::stdout().lock())),
+        Command::Profile(ProfileCommand::List) => {
+            block_on(status::profile_list(cli.bus, &mut io::stdout().lock()))
+        }
+        Command::Profile(ProfileCommand::Set { name }) => block_on(status::profile_set(
+            cli.bus,
+            &name,
+            &mut io::stdout().lock(),
+        )),
         Command::Daemon(DaemonCommand::Status) => {
             block_on(status::daemon_status(cli.bus, &mut io::stdout().lock()))
         }

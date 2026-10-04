@@ -5,8 +5,8 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use rq_core::{FanRole, TelemetrySample, TemperatureUnit};
-use rq_ipc::Client;
+use rq_core::{FanRole, TelemetrySample, TemperatureUnit, ThermalProfileId};
+use rq_ipc::{ChoiceState, Client, ClientError, ErrorKind};
 
 use crate::Bus;
 
@@ -20,13 +20,75 @@ async fn connect(bus: Bus) -> anyhow::Result<zbus::Connection> {
     Ok(conn)
 }
 
-fn explain(e: rq_ipc::ClientError) -> anyhow::Error {
+fn explain(e: ClientError) -> anyhow::Error {
     let text = e.to_string();
+    if let Some(kind) = e.kind() {
+        return match kind {
+            ErrorKind::NotAuthorized => anyhow::anyhow!("not authorized: {text}"),
+            _ => anyhow::anyhow!("{text}"),
+        };
+    }
     if text.contains("ServiceUnknown") || text.contains("NameHasNoOwner") {
         anyhow::anyhow!("the Red Queen daemon is not running (check: systemctl status redqueend)")
     } else {
         anyhow::Error::new(e)
     }
+}
+
+/// `redqueen profile list`.
+pub async fn profile_list(bus: Bus, out: &mut impl Write) -> anyhow::Result<()> {
+    let conn = connect(bus).await?;
+    let info = Client::new(&conn)
+        .await
+        .map_err(explain)?
+        .thermal_profiles()
+        .await
+        .map_err(explain)?;
+    if !info.available {
+        writeln!(out, "This machine has no controllable thermal profile.")?;
+        writeln!(
+            out,
+            "On the Acer Nitro ANV15-51 the acer_wmi driver needs the option predator_v4=1; see `redqueen probe`."
+        )?;
+        return Ok(());
+    }
+    writeln!(out, "Thermal profiles")?;
+    for c in &info.choices {
+        let mark = if info.active.as_ref() == Some(&c.id) {
+            "*"
+        } else {
+            " "
+        };
+        let note = match (info.active.as_ref() == Some(&c.id), c.state) {
+            (_, ChoiceState::Unsupported) => "  not supported by the firmware (rejected earlier)",
+            (true, _) => "  active",
+            _ => "",
+        };
+        writeln!(out, "  {mark} {}{note}", c.id.kernel_name())?;
+    }
+    writeln!(
+        out,
+        "\nNot every advertised profile is accepted by the firmware."
+    )?;
+    Ok(())
+}
+
+/// `redqueen profile set <name>`.
+pub async fn profile_set(bus: Bus, name: &str, out: &mut impl Write) -> anyhow::Result<()> {
+    let profile =
+        ThermalProfileId::parse_untrusted(name).map_err(|e| anyhow::anyhow!("'{name}': {e}"))?;
+    let conn = connect(bus).await?;
+    let client = Client::new(&conn).await.map_err(explain)?;
+    let result = client
+        .set_thermal_profile(&profile)
+        .await
+        .map_err(explain)?;
+    writeln!(
+        out,
+        "Thermal profile is now '{}' (confirmed by the hardware).",
+        result.active.kernel_name()
+    )?;
+    Ok(())
 }
 
 /// `redqueen daemon status`.
