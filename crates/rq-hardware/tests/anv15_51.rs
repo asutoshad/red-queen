@@ -337,3 +337,38 @@ fn awake_gpu_zero_reading_is_none() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn battery_is_read_on_the_slow_schedule() -> TestResult {
+    use std::time::Duration;
+    let bat = "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0C0A:00/power_supply/BAT1";
+    let capacity = |s: &rq_core::TelemetrySample| s.battery.as_ref().and_then(|b| b.percent);
+
+    // Slow schedule: a change between ticks isn't seen until the refresh is due.
+    let fs = presets::anv15_51(true)?;
+    let root = SystemRoot::at(fs.path());
+    let snap = SystemSnapshot::discover(&root);
+    let mut slow =
+        rq_hardware::Sampler::new(root, &snap).with_slow_refresh(Duration::from_secs(3600));
+    assert_eq!(capacity(&slow.sample(0)), Some(87));
+    fs.file(&format!("{bat}/capacity"), "50")?;
+    assert_eq!(capacity(&slow.sample(1)), Some(87), "served from the cache");
+    fs.file("/sys/firmware/acpi/platform_profile", "quiet")?;
+    assert_eq!(
+        slow.sample(2).thermal_profile,
+        Some(ThermalProfileId::Balanced),
+        "the profile read is expensive firmware work and is cached too"
+    );
+
+    // Zero interval: every sample re-reads.
+    let root = SystemRoot::at(fs.path());
+    let mut fast = rq_hardware::Sampler::new(root, &snap).with_slow_refresh(Duration::ZERO);
+    assert_eq!(capacity(&fast.sample(0)), Some(50));
+    fs.file(&format!("{bat}/capacity"), "40")?;
+    assert_eq!(capacity(&fast.sample(1)), Some(40));
+    assert_eq!(
+        fast.sample(2).thermal_profile,
+        Some(ThermalProfileId::Quiet)
+    );
+    Ok(())
+}

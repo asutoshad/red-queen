@@ -5,7 +5,7 @@
 //! resume) the owner rebuilds it from a fresh snapshot instead of keeping
 //! stale paths.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rq_core::{
     BatteryState, BatterySummary, CpuStatus, FanReading, GpuStatus, MemoryStatus, MilliCelsius,
@@ -21,6 +21,19 @@ use crate::snapshot::SystemSnapshot;
 const HWMON: &str = "/sys/class/hwmon";
 const PSU: &str = "/sys/class/power_supply";
 const RAPL: &str = "/sys/class/powercap/intel-rapl:0";
+
+/// Battery, AC and the thermal profile change slowly, and reading them makes
+/// the kernel call into firmware (the profile read alone costs about 5 ms of
+/// CPU on the ANV15-51), so they are refreshed less often than the rest.
+const SLOW_REFRESH: Duration = Duration::from_secs(5);
+
+/// Values refreshed on the slow schedule.
+#[derive(Debug, Clone, Default)]
+struct SlowValues {
+    battery: Option<BatterySummary>,
+    ac_online: Option<bool>,
+    thermal_profile: Option<ThermalProfileId>,
+}
 
 /// Where each value comes from, resolved once per discovery.
 #[derive(Debug, Clone, Default)]
@@ -50,6 +63,8 @@ pub struct Sampler {
     src: Sources,
     prev_cpu: Vec<CpuTimes>,
     prev_rapl: Option<(u64, Instant)>,
+    slow: Option<(Instant, SlowValues)>,
+    slow_refresh: Duration,
 }
 
 impl Sampler {
@@ -61,18 +76,25 @@ impl Sampler {
             src,
             prev_cpu: Vec::new(),
             prev_rapl: None,
+            slow: None,
+            slow_refresh: SLOW_REFRESH,
         }
     }
 
-    /// Takes one sample. `now_ms` is Unix time; rates use the monotonic
-    /// clock internally.
-    pub fn sample(&mut self, now_ms: u64) -> TelemetrySample {
-        TelemetrySample {
-            timestamp_ms: now_ms,
-            cpu: self.cpu(),
-            gpu: self.gpu(),
-            memory: self.memory(),
-            fans: self.fans(),
+    /// Changes how often battery, AC and the thermal profile are re-read.
+    #[must_use]
+    pub fn with_slow_refresh(mut self, every: Duration) -> Self {
+        self.slow_refresh = every;
+        self
+    }
+
+    fn slow_values(&mut self) -> SlowValues {
+        if let Some((at, values)) = &self.slow
+            && at.elapsed() < self.slow_refresh
+        {
+            return values.clone();
+        }
+        let values = SlowValues {
             battery: self.battery(),
             ac_online: self
                 .src
@@ -86,6 +108,24 @@ impl Sampler {
                 .as_ref()
                 .and_then(|p| self.root.read_string(p))
                 .map(|s| ThermalProfileId::from_kernel_name(&s)),
+        };
+        self.slow = Some((Instant::now(), values.clone()));
+        values
+    }
+
+    /// Takes one sample. `now_ms` is Unix time; rates use the monotonic
+    /// clock internally.
+    pub fn sample(&mut self, now_ms: u64) -> TelemetrySample {
+        let slow = self.slow_values();
+        TelemetrySample {
+            timestamp_ms: now_ms,
+            cpu: self.cpu(),
+            gpu: self.gpu(),
+            memory: self.memory(),
+            fans: self.fans(),
+            battery: slow.battery,
+            ac_online: slow.ac_online,
+            thermal_profile: slow.thermal_profile,
             uptime_s: self
                 .root
                 .read_string("/proc/uptime")
