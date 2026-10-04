@@ -8,6 +8,7 @@ pub mod capability;
 pub mod fan;
 pub mod identity;
 pub mod power;
+pub mod safety;
 pub mod telemetry;
 pub mod thermal;
 pub mod units;
@@ -16,6 +17,9 @@ pub use capability::{Backend, CapabilityStatus, Feature, Maturity, Reason};
 pub use fan::{FanMode, FanRole, RoleSource};
 pub use identity::{HardwareIdentity, KernelInfo, OsInfo};
 pub use power::BatteryState;
+pub use safety::{
+    HARD_MIN_PERCENT, SafetyConfig, SafetyFile, SafetyMonitor, SupervisedFan, TripReason,
+};
 pub use telemetry::{
     BatterySummary, CpuStatus, FanReading, GpuStatus, History, MemoryStatus, TelemetrySample,
 };
